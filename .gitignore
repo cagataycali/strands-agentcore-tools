@@ -7,3 +7,4 @@ sessions
 .bedrock_agentcore
 *.egg-info
 .mypy_cache
+dist

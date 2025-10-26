@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "strands-agentcore-tools"
-version = "0.1.0"
+version = "0.1.1"
 description = "Strands tools for AWS Bedrock AgentCore lifecycle management"
 readme = "README.md"
 requires-python = ">=3.10"

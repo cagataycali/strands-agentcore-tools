@@ -34,691 +34,83 @@ def identity(
     region: str = "us-west-2",
     verbose: bool = False,
 ) -> Dict[str, Any]:
-    """Manage AgentCore Identity - OAuth2, API keys, secure credential storage for agents.
+    """Manage OAuth2, API keys, and workload identities for AgentCore agents.
 
-    How It Works:
-    ------------
-    1. **Provider Creation**: Register OAuth2 or API key providers with AgentCore
-    2. **Secure Storage**: Credentials stored in AWS Secrets Manager with KMS encryption
-    3. **Agent Integration**: Use @requires_access_token decorator in agent code
-    4. **Token Retrieval**: SDK automatically handles OAuth flows and token management
-    5. **Agent Invocation**: Agents receive tokens to access external services
-    6. **Audit Trail**: All operations logged for compliance and security monitoring
+    Enables agents to securely access external services via OAuth2 flows or API keys.
+    Credentials stored in AWS Secrets Manager with KMS encryption. Use @requires_access_token
+    decorator in agent code for automatic token management.
 
-    Identity Integration Patterns:
-    -----------------------------
-
-    ### Pattern 1: OAuth2 User-Delegated Access (@requires_access_token)
-    Build agents that access user data with explicit consent:
-
-    ```python
-    from bedrock_agentcore.runtime import BedrockAgentCoreApp
-    from bedrock_agentcore.identity import requires_access_token
-    import asyncio
-
-    app = BedrockAgentCoreApp()
-    queue = asyncio.Queue()
-
-    async def handle_auth_url(url):
-        await queue.put(f"Authorize: {url}")
-
-    @requires_access_token(
-        provider_name="my-slack-oauth",
-        scopes=["users:read", "channels:read"],
-        auth_flow="USER_FEDERATION",
-        on_auth_url=handle_auth_url,
-        force_authentication=True
-    )
-    async def access_slack_data(*, access_token: str):
-        # Token automatically provided by decorator
-        headers = {"Authorization": f"Bearer {access_token}"}
-        # Make authenticated API calls...
-        await queue.put({"message": "Accessed user's Slack!"})
-
-    @app.entrypoint
-    async def invoke(payload, context):
-        task = asyncio.create_task(access_slack_data())
-        async for item in queue.stream():
-            yield item
-        await task
-    ```
-
-    ### Pattern 2: API Key Machine-to-Machine Access
-    Build agents that use API keys for service authentication:
-
-    ```python
-    # 1. Store API key in AgentCore Identity
-    identity(
-        action="create",
-        provider_type="api_key",
-        name="github-api",
-        api_key="ghp_xxxxx"
-    )
-
-    # 2. Retrieve in agent code
-    import boto3
-    client = boto3.client("bedrock-agentcore-control")
-    response = client.get_api_key_credential_provider(name="github-api")
-
-    # 3. Get secret from Secrets Manager
-    secret_arn = response["apiKeySecretArn"]["secretArn"]
-    secrets = boto3.client("secretsmanager")
-    api_key = secrets.get_secret_value(SecretId=secret_arn)["SecretString"]
-    ```
-
-    ### Pattern 3: Workload Identity (Agent-to-Agent)
-    Secure communication between deployed agents:
-
-    ```python
-    # Automatically created when agent is deployed
-    # Each agent gets workload identity:
-    # arn:aws:bedrock-agentcore:region:account:workload-identity-directory/default/workload-identity/agent-name
-
-    # Use in IAM policies for agent-to-agent authorization
-    ```
-
-    Building Identity-Connected Agents:
-    -----------------------------------
-
-    ### Complete Agent Example with OAuth2:
-
-    ```python
-    \"\"\"
-    Slack Integration Agent - Reads user's channels with OAuth2
-    \"\"\"
-    from bedrock_agentcore.runtime import BedrockAgentCoreApp
-    from bedrock_agentcore.identity import requires_access_token
-    import asyncio
-    import httpx
-    import logging
-
-    app = BedrockAgentCoreApp()
-    logger = logging.getLogger(__name__)
-
-    class StreamingQueue:
-        def __init__(self):
-            self.finished = False
-            self.queue = asyncio.Queue()
-
-        async def put(self, item):
-            await self.queue.put(item)
-
-        async def finish(self):
-            self.finished = True
-            await self.queue.put(None)
-
-        async def stream(self):
-            while True:
-                item = await self.queue.get()
-                if item is None and self.finished:
-                    break
-                yield item
-
-    queue = StreamingQueue()
-
-    async def handle_auth_url(url):
-        # Stream authorization URL to user
-        await queue.put(f"Please authorize: {url}")
-
-    @requires_access_token(
-        provider_name="my-slack-oauth",
-        scopes=["channels:read", "users:read"],
-        auth_flow="USER_FEDERATION",
-        on_auth_url=handle_auth_url,
-        force_authentication=False  # Reuse cached tokens
-    )
-    async def list_slack_channels(*, access_token: str):
-        logger.info("Got access token, fetching channels...")
-
-        # Use token to access Slack API
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                "https://slack.com/api/conversations.list",
-                headers={"Authorization": f"Bearer {access_token}"}
-            )
-            data = response.json()
-
-            if data.get("ok"):
-                channels = [ch["name"] for ch in data.get("channels", [])]
-                await queue.put({
-                    "message": "Successfully accessed Slack!",
-                    "channels": channels
-                })
-            else:
-                await queue.put({"error": data.get("error")})
-
-        await queue.finish()
-
-    @app.entrypoint
-    async def invoke(payload, context):
-        logger.info("Starting Slack agent...")
-
-        # Start OAuth flow and channel retrieval
-        task = asyncio.create_task(list_slack_channels())
-
-        # Stream results
-        async for item in queue.stream():
-            yield item
-
-        await task
-
-    if __name__ == "__main__":
-        app.run()
-    ```
-
-    Deployment Workflow:
-    ----------------------------
-
-    ### Step 1: Create Credential Provider (This Tool)
-
-    ```python
-    # Create OAuth2 provider for Slack
-    identity(
-        action="create",
-        provider_type="oauth2",
-        name="my-slack-oauth",
-        vendor="SlackOauth2",
-        client_id="8911857480961.9155488574208",
-        client_secret="your-client-secret"
-    )
-
-    # Create API key provider for GitHub
-    identity(
-        action="create",
-        provider_type="api_key",
-        name="github-api",
-        api_key="ghp_xxxxx"
-    )
-    ```
-
-    ### Step 2: Write Agent Code (See examples above)
-
-    ### Step 3: Configure Agent with Identity Permissions
-
-    ```python
-    # Configure agent
-    configure(
-        action="configure",
-        entrypoint="slack_agent.py",
-        agent_name="slack-integration",
-        memory_mode="STM_AND_LTM"
-    )
-
-    # Add IAM permissions for identity access
-    # The agent needs permissions to:
-    # - bedrock-agentcore:GetResourceOauth2Token
-    # - secretsmanager:GetSecretValue
-    ```
-
-    ### Step 4: Deploy Agent
-
-    ```python
-    # Launch to AgentCore
-    launch(
-        action="launch",
-        agent_name="slack-integration",
-        mode="codebuild"
-    )
-    ```
-
-    ### Step 5: Invoke with User Context
-
-    ```python
-    # Invoke agent (triggers OAuth flow)
-    invoke(
-        agent_arn="arn:aws:bedrock-agentcore:us-west-2:123:runtime/slack-integration",
-        payload='{"prompt": "List my Slack channels"}',
-        user_id="user-123",  # Required for OAuth flows
-        session_id="33-char-minimum-session-id-here"  # Min 33 chars
-    )
-
-    # Agent returns authorization URL
-    # User visits URL → Grants consent → Agent receives token
-    # Subsequent calls reuse cached token (no re-auth)
-    ```
-
-    IAM Permissions Required:
-    -------------------------
-
-    **For Agent Execution Role:**
-
-    ```json
-    {
-      "Version": "2012-10-17",
-      "Statement": [
-        {
-          "Sid": "AccessTokenVault",
-          "Effect": "Allow",
-          "Action": [
-            "bedrock-agentcore:GetResourceOauth2Token",
-            "secretsmanager:GetSecretValue"
-          ],
-          "Resource": [
-            "arn:aws:bedrock-agentcore:region:account:workload-identity-directory/default/workload-identity/*",
-            "arn:aws:bedrock-agentcore:region:account:token-vault/default/oauth2credentialprovider/*",
-            "arn:aws:secretsmanager:region:account:secret:bedrock-agentcore-identity!default/oauth2/*"
-          ]
-        }
-      ]
-    }
-    ```
-
-    **For This Tool (Management Operations):**
-
-    ```json
-    {
-      "Effect": "Allow",
-      "Action": [
-        "bedrock-agentcore-control:CreateOAuth2CredentialProvider",
-        "bedrock-agentcore-control:GetOAuth2CredentialProvider",
-        "bedrock-agentcore-control:ListOAuth2CredentialProviders",
-        "bedrock-agentcore-control:DeleteOAuth2CredentialProvider",
-        "bedrock-agentcore-control:CreateApiKeyCredentialProvider",
-        "bedrock-agentcore-control:GetApiKeyCredentialProvider",
-        "bedrock-agentcore-control:ListApiKeyCredentialProviders",
-        "bedrock-agentcore-control:DeleteApiKeyCredentialProvider"
-      ],
-      "Resource": "*"
-    }
-    ```
-
-    Common Use Cases:
-    ----------------
-
-    ### 1. Slack Bot Integration
-
-    ```python
-    # Store Slack OAuth credentials
-    identity(
-        action="create",
-        provider_type="oauth2",
-        name="slack-bot",
-        vendor="SlackOauth2",
-        client_id="8911857480961.9644037846534",
-        client_secret="6068b88027530422b4122490826d1363"
-    )
-
-    # Agent uses @requires_access_token to access Slack API
-    # Supports: message posting, channel management, user lookup
-    ```
-
-    ### 2. GitHub Repository Access
-
-    ```python
-    # Store GitHub API token
-    identity(
-        action="create",
-        provider_type="api_key",
-        name="github-token",
-        api_key="ghp_xxxxx"
-    )
-
-    # Agent retrieves token from Secrets Manager
-    # Supports: repo access, issue management, PR operations
-    ```
-
-    ### 3. Multi-Service Integration
-
-    ```python
-    # Create multiple providers for comprehensive integration
-    providers = [
-        ("slack-oauth", "SlackOauth2", slack_creds),
-        ("github-oauth", "GitHubOauth2", github_creds),
-        ("google-oauth", "GoogleOauth2", google_creds)
-    ]
-
-    for name, vendor, creds in providers:
+    Quick Examples:
+        # OAuth2 provider
         identity(
             action="create",
             provider_type="oauth2",
-            name=name,
-            vendor=vendor,
-            client_id=creds["id"],
-            client_secret=creds["secret"]
-        )
-
-    # Agent uses multiple @requires_access_token decorators
-    # Each for different service integration
-    ```
-
-    ### 4. API Key Management
-
-    ```python
-    # Centralize all API keys in AgentCore Identity
-    api_keys = {
-        "brave-search": "BSAUQHelAzCuBPgZhmhmzF1V0v5l0Ex",
-        "huggingface": "hf_xxxxx",
-        "shodan": "9VJCqKL5eKn7vFwuCZI7j8R5aOLVUIv6"
-    }
-
-    for name, key in api_keys.items():
-        identity(
-            action="create",
-            provider_type="api_key",
-            name=name,
-            api_key=key
-        )
-
-    # Benefits:
-    # - No hardcoded secrets in code
-    # - Centralized rotation
-    # - Audit trail for all access
-    ```
-
-    ### 5. Workload Identity Verification
-
-    ```python
-    # List all agent workload identities
-    identity(action="list", provider_type="workload")
-
-    # Verify specific agent identity
-    identity(
-        action="get",
-        provider_type="workload",
-        name="my-agent-name"
-    )
-
-    # Use for agent-to-agent authorization policies
-    ```
-
-    OAuth2 Flow Types:
-    -----------------
-
-    ### 2LO (Client Credentials Grant) - Machine-to-Machine
-
-    **Use when:** Agent needs to access resources as itself (no user context)
-
-    **Example:**
-    ```python
-    @requires_access_token(
-        provider_name="service-oauth",
-        scopes=["api.read"],
-        auth_flow="CLIENT_CREDENTIALS"  # 2LO flow
-    )
-    async def access_service(*, access_token: str):
-        # Agent authenticates as itself
-        # No user interaction needed
-        pass
-    ```
-
-    ### 3LO (Authorization Code Grant) - User-Delegated Access
-
-    **Use when:** Agent needs to access user-specific data (requires consent)
-
-    **Example:**
-    ```python
-    @requires_access_token(
-        provider_name="slack-oauth",
-        scopes=["channels:read"],
-        auth_flow="USER_FEDERATION",  # 3LO flow
-        on_auth_url=handle_auth_url,  # Stream URL to user
-        force_authentication=True  # Always request fresh consent
-    )
-    async def access_user_slack(*, access_token: str):
-        # Agent accesses user's Slack data
-        # User must grant consent first
-        pass
-    ```
-
-    Integration with Other Tools:
-    -----------------------------
-
-    **identity() works seamlessly with:**
-
-    ```python
-    # 1. With configure - set up identity permissions
-    configure(
-        action="configure",
-        entrypoint="oauth_agent.py",
-        agent_name="my-oauth-agent"
-    )
-    # Then add IAM permissions for identity access
-
-    # 2. With launch - deploy identity-enabled agents
-    identity(action="create", provider_type="oauth2", name="slack-oauth", ...)
-    launch(action="launch", agent_name="my-oauth-agent")
-
-    # 3. With invoke - trigger OAuth flows
-    invoke(
-        agent_arn="...",
-        payload='{"prompt": "Access my Slack"}',
-        user_id="user-123",  # Required for OAuth flows
-        session_id="min-33-chars-session-id"
-    )
-
-    # 4. With status - verify agent readiness
-    status(agent_id="my-oauth-agent-abc")
-    invoke(agent_arn="...", user_id="user-123", ...)
-
-    # 5. With logs - debug OAuth flows
-    logs(
-        agent_name="my-oauth-agent",
-        action="search",
-        filter_pattern="OAuth"
-    )
-    ```
-
-    Security Best Practices:
-    -----------------------
-
-    **1. Never Hardcode Secrets:**
-    - ❌ Don't: `api_key = "ghp_xxxxx"` in code
-    - ✅ Do: Store in AgentCore Identity, retrieve at runtime
-
-    **2. Use Least Privilege:**
-    - Only request scopes your agent needs
-    - Example: `scopes=["channels:read"]` not `scopes=["*"]`
-
-    **3. Rotate Credentials:**
-    ```python
-    # Update OAuth client secret
-    identity(
-        action="update",
-        provider_type="oauth2",
-        name="slack-oauth",
-        client_secret="new-secret-here"
-    )
-    ```
-
-    **4. Audit Access:**
-    ```python
-    # List all credential providers
-    identity(action="list", provider_type="oauth2")
-    identity(action="list", provider_type="api_key")
-
-    # Review token vault encryption
-    identity(action="get_vault")
-    ```
-
-    **5. Use Customer-Managed KMS Keys:**
-    ```python
-    # Set custom KMS key for token vault
-    identity(
-        action="set_vault_key",
-        kms_key_id="arn:aws:kms:us-west-2:123:key/abc-123"
-    )
-    ```
-
-    Supported OAuth2 Vendors:
-    -------------------------
-
-    | Vendor | Discovery URL | Typical Scopes |
-    |--------|--------------|----------------|
-    | **SlackOauth2** | https://slack.com/.well-known/openid-configuration | channels:read, users:read, chat:write |
-    | **GitHubOauth2** | https://github.com/.well-known/openid-configuration | repo, user, admin:org |
-    | **GoogleOauth2** | https://accounts.google.com/.well-known/openid-configuration | openid, profile, email |
-    | **CustomOauth2** | Your discovery URL | Custom scopes |
-
-    Args:
-        action: Identity operation to perform:
-            - "create": Create new credential provider or workload identity
-            - "get": Get credential provider or workload identity details
-            - "list": List all credential providers or workload identities
-            - "delete": Delete credential provider or workload identity
-            - "update": Update credential provider
-            - "get_vault": Get token vault configuration
-            - "set_vault_key": Set token vault KMS key
-
-        name: Identity resource name (required for most operations)
-            Format: [a-zA-Z0-9_-]{1,100}
-            Example: "my-slack-oauth", "github-api-key"
-
-        provider_type: Type of credential provider:
-            - "oauth2": OAuth2 credential provider (default)
-              Use for: User-delegated access, service OAuth
-            - "api_key": API key credential provider
-              Use for: Simple API authentication
-            - "workload": Workload identity
-              Use for: Agent-to-agent authorization
-
-        # OAuth2 Parameters
-        vendor: OAuth2 vendor (required for OAuth2 create):
-            - "SlackOauth2": Slack OAuth with auto-discovery
-            - "GitHubOauth2": GitHub OAuth with auto-discovery
-            - "GoogleOauth2": Google OAuth with auto-discovery
-            - "CustomOauth2": Custom OAuth provider (requires discovery_url)
-
-        client_id: OAuth2 client ID from your OAuth app
-            Get from: OAuth provider's app settings
-            Example: "8911857480961.9155488574208"
-
-        client_secret: OAuth2 client secret from your OAuth app
-            Stored in: AWS Secrets Manager (encrypted)
-            Never logged or returned in responses
-
-        discovery_url: OAuth2 discovery URL (for CustomOauth2)
-            Format: https://provider.com/.well-known/openid-configuration
-            Contains: Authorization/token endpoints, supported scopes
-
-        authorization_endpoint: Authorization endpoint URL (for CustomOauth2)
-            Example: "https://provider.com/oauth/authorize"
-
-        token_endpoint: Token endpoint URL (for CustomOauth2)
-            Example: "https://provider.com/oauth/token"
-
-        scopes: List of OAuth2 scopes (optional)
-            Example: ["openid", "profile", "email"]
-            Provider-specific scopes defined by OAuth server
-
-        # API Key Parameters
-        api_key: API key value (required for API key create)
-            Stored in: AWS Secrets Manager (encrypted)
-            Use for: Simple API authentication
-
-        header_name: HTTP header name for API key
-            Example: "X-API-Key", "Authorization"
-            Note: Currently not used by API (stored in app config)
-
-        # Workload Identity Parameters
-        workload_arn: Workload ARN to associate with identity
-            Format: arn:aws:bedrock-agentcore:region:account:runtime/agent-name
-            Auto-created: When agent is deployed to AgentCore
-
-        # Token Vault Parameters
-        kms_key_id: KMS key ID for token vault encryption
-            Format: arn:aws:kms:region:account:key/key-id
-            Default: Service-managed KMS key
-            Custom: For compliance requirements
-
-        # Common Parameters
-        max_results: Maximum results for list operations (default: 20)
-            Range: 1-100
-            Use: Pagination control
-
-        region: AWS region where identity resources are stored
-            Default: us-west-2
-            Must match: Agent deployment region
-
-        verbose: Enable verbose logging (default: False)
-            True: Shows detailed progress with emoji indicators
-            False: Silent operation
-            Output: Goes to stdout/CloudWatch Logs
-
-    Returns:
-        Dict containing status and response content in the format:
-        {
-            "status": "success|error",
-            "content": [
-                {"text": "Operation result message"},
-                {"text": "Additional details"}
-            ]
-        }
-
-        Success case: Returns provider ARN, callback URLs, configuration
-        Error case: Returns error details with troubleshooting guidance
-
-    Examples:
-        # Create Slack OAuth2 credential provider
-        identity(
-            action="create",
-            provider_type="oauth2",
-            name="my-slack-oauth",
+            name="slack-oauth",
             vendor="SlackOauth2",
-            client_id="8911857480961.9155488574208",
-            client_secret="your-secret-here"
+            client_id="your-client-id",
+            client_secret="your-secret"
         )
 
-        # Create GitHub OAuth2 credential provider
-        identity(
-            action="create",
-            provider_type="oauth2",
-            name="my-github-oauth",
-            vendor="GitHubOauth2",
-            client_id="github-client-id",
-            client_secret="github-client-secret",
-            discovery_url="https://github.com/.well-known/openid-configuration"
-        )
-
-        # Create generic OAuth2 provider
-        identity(
-            action="create",
-            provider_type="oauth2",
-            name="my-oauth-provider",
-            vendor="GenericOauth2",
-            client_id="client-id",
-            client_secret="client-secret",
-            authorization_endpoint="https://auth.example.com/oauth/authorize",
-            token_endpoint="https://auth.example.com/oauth/token",
-            scopes=["read", "write"]
-        )
-
-        # Create API key credential provider
+        # API key provider
         identity(
             action="create",
             provider_type="api_key",
-            name="my-api-key",
-            api_key="your-api-key-here",
-            header_name="X-API-Key"
+            name="github-api",
+            api_key="ghp_xxxxx"
         )
 
-        # List all OAuth2 providers
+        # List providers
         identity(action="list", provider_type="oauth2")
 
-        # List all workload identities
-        identity(action="list", provider_type="workload")
+    Args:
+        action: Operation - create, get, list, delete, update, get_vault, set_vault_key
+        name: Provider name (required for most operations)
+        provider_type: oauth2 (default), api_key, or workload
+        
+        # OAuth2 specific
+        vendor: SlackOauth2, GitHubOauth2, GoogleOauth2, or CustomOauth2
+        client_id: OAuth2 client ID
+        client_secret: OAuth2 client secret (stored encrypted)
+        discovery_url: OAuth2 discovery URL (for CustomOauth2)
+        authorization_endpoint: Auth endpoint (for CustomOauth2)
+        token_endpoint: Token endpoint (for CustomOauth2)
+        scopes: List of OAuth2 scopes
 
-        # Get specific OAuth2 provider
-        identity(
-            action="get",
-            provider_type="oauth2",
-            name="my-slack-oauth"
-        )
+        # API Key specific
+        api_key: API key value (stored encrypted)
+        header_name: HTTP header name
 
-        # Delete OAuth2 provider
-        identity(
-            action="delete",
-            provider_type="oauth2",
-            name="my-slack-oauth"
-        )
+        # Workload Identity specific
+        workload_arn: Agent runtime ARN
 
-        # Get token vault configuration
-        identity(action="get_vault")
+        # Token Vault
+        kms_key_id: KMS key for encryption (optional)
 
-        # Set token vault KMS key
-        identity(
-            action="set_vault_key",
-            kms_key_id="arn:aws:kms:us-west-2:123:key/abc-123"
-        )
+        # Common
+        max_results: Max results for list (1-100, default: 20)
+        region: AWS region (default: us-west-2)
+        verbose: Enable verbose logging (default: False)
+
+    Returns:
+        Dict with status and content:
+        {
+            "status": "success|error",
+            "content": [{"text": "Result message"}]
+        }
+
+    OAuth2 Vendors:
+        - SlackOauth2: Slack OAuth with auto-discovery
+        - GitHubOauth2: GitHub OAuth with auto-discovery
+        - GoogleOauth2: Google OAuth with auto-discovery
+        - CustomOauth2: Custom provider (needs discovery_url)
+
+    IAM Permissions (Agent Execution Role):
+        - bedrock-agentcore:GetResourceOauth2Token
+        - secretsmanager:GetSecretValue
+
+    IAM Permissions (Management Operations):
+        - bedrock-agentcore-control:Create/Get/List/DeleteOAuth2CredentialProvider
+        - bedrock-agentcore-control:Create/Get/List/DeleteApiKeyCredentialProvider
     """
     try:
         import boto3

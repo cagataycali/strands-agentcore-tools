@@ -11,7 +11,7 @@ long_description = (
 
 setup(
     name="strands-agentcore-tools",
-    version="0.1.0",
+    version="0.1.1",
     description="Strands tools for AWS Bedrock AgentCore lifecycle management",
     long_description=long_description,
     long_description_content_type="text/markdown",

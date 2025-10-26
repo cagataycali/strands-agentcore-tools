@@ -206,9 +206,9 @@ License:
 MIT License - see LICENSE file for details
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 __author__ = "Cagatay Cali"
-__email__ = "cagatay.cali@gmail.com"
+__email__ = "cagataycali@icloud.com"
 
 # Import all tools from their respective modules
 from .agents import agents
