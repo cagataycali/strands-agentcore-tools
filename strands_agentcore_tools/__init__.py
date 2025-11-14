@@ -206,7 +206,7 @@ License:
 MIT License - see LICENSE file for details
 """
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 __author__ = "Cagatay Cali"
 __email__ = "cagataycali@icloud.com"
 

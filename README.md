@@ -37,28 +37,29 @@
 **Copy-paste ready agent with all execution modes:**
 
 ```python
-# agent.py - Minimalist AgentCore agent with Strands
-import asyncio
+# agent.py
+import threading
 from bedrock_agentcore import BedrockAgentCoreApp
 from strands import Agent
 
 app = BedrockAgentCoreApp()
 
-@app.async_task
-async def run_agent_background(agent, prompt):
-    """Background task wrapper for fire-and-forget execution"""
-    async for event in agent.stream_async(prompt):
-        print(event)  # Log events in background
-
 @app.entrypoint
-async def invoke(payload, context):
+def invoke(payload, context):
+    """Sync entrypoint - DO NOT use async or @app.async_task (blocks event loop)"""
     agent = Agent()
     prompt = payload.get("prompt", "")
     mode = payload.get("mode", "streaming")  # streaming | sync | fire_and_forget
     
     if mode == "fire_and_forget":
-        # Start background task with @app.async_task wrapper, return immediately
-        asyncio.create_task(run_agent_background(agent, prompt))
+        # Start background thread
+        task_id = app.add_async_task("agent_processing", payload)
+        thread = threading.Thread(
+            target=run_agent_background,
+            args=(agent, prompt, task_id),
+            daemon=True
+        )
+        thread.start()
         return {"status": "started", "content": [{"text": "Agent running in background"}]}
     
     elif mode == "sync":
@@ -67,9 +68,19 @@ async def invoke(payload, context):
         return {"status": "success", "content": [{"text": str(result)}]}
     
     else:
-        # Streaming response (default, recommended for UX)
-        async for event in agent.stream_async(prompt):
+        # Streaming response
+        for event in agent.stream(prompt):
             yield event
+
+def run_agent_background(agent, prompt, task_id):
+    """Background worker (sync function, runs in separate thread)"""
+    try:
+        for event in agent.stream(prompt):
+            print(event)  # Log events in background
+        app.complete_async_task(task_id)
+    except Exception as e:
+        app.logger.error(f"Background task failed: {e}")
+        app.complete_async_task(task_id)
 
 app.run()
 ```
@@ -105,7 +116,8 @@ MEMORY_ID = os.getenv("BEDROCK_AGENTCORE_MEMORY_ID")
 REGION = os.getenv("AWS_REGION", "us-west-2")
 
 @app.entrypoint
-async def invoke(payload, context):
+def invoke(payload, context):
+    """Sync entrypoint"""
     session_id = context.session_id
     actor_id = context.headers.get(
         "X-Amzn-Bedrock-AgentCore-Runtime-Custom-Actor-Id", 
@@ -137,12 +149,15 @@ async def invoke(payload, context):
     # Create agent with memory
     agent = Agent(
         tools=memory_provider.tools,
-        session_manager=AgentCoreMemorySessionManager(memory_config, REGION),
+        session_manager=AgentCoreMemorySessionManager(
+            agentcore_memory_config=memory_config, 
+            region=REGION
+        ),
         system_prompt="You have persistent memory across conversations."
     )
     
-    # Stream responses
-    async for event in agent.stream_async(payload.get("prompt")):
+    # Stream responses (sync version)
+    for event in agent.stream(payload.get("prompt")):
         yield event
 
 app.run()

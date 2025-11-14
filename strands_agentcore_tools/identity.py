@@ -66,7 +66,7 @@ def identity(
         action: Operation - create, get, list, delete, update, get_vault, set_vault_key
         name: Provider name (required for most operations)
         provider_type: oauth2 (default), api_key, or workload
-        
+
         # OAuth2 specific
         vendor: SlackOauth2, GitHubOauth2, GoogleOauth2, or CustomOauth2
         client_id: OAuth2 client ID
