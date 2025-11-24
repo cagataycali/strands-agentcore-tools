@@ -69,13 +69,13 @@ def invoke(payload, context):
     
     else:
         # Streaming response
-        for event in agent.stream(prompt):
+        for event in agent.stream_async(prompt):
             yield event
 
 def run_agent_background(agent, prompt, task_id):
     """Background worker (sync function, runs in separate thread)"""
     try:
-        for event in agent.stream(prompt):
+        for event in agent.stream_async(prompt):
             print(event)  # Log events in background
         app.complete_async_task(task_id)
     except Exception as e:
@@ -150,14 +150,14 @@ def invoke(payload, context):
     agent = Agent(
         tools=memory_provider.tools,
         session_manager=AgentCoreMemorySessionManager(
-            agentcore_memory_config=memory_config, 
+            agentcore_memory_config=memory_config,
             region=REGION
         ),
         system_prompt="You have persistent memory across conversations."
     )
     
     # Stream responses (sync version)
-    for event in agent.stream(payload.get("prompt")):
+    for event in agent.stream_async(payload.get("prompt")):
         yield event
 
 app.run()
