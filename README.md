@@ -45,8 +45,8 @@ from strands import Agent
 app = BedrockAgentCoreApp()
 
 @app.entrypoint
-def invoke(payload, context):
-    """Sync entrypoint - DO NOT use async or @app.async_task (blocks event loop)"""
+async def invoke(payload, context):
+    """Async entrypoint with yield support for streaming"""
     agent = Agent()
     prompt = payload.get("prompt", "")
     mode = payload.get("mode", "streaming")  # streaming | sync | fire_and_forget
@@ -60,12 +60,12 @@ def invoke(payload, context):
             daemon=True
         )
         thread.start()
-        return {"status": "started", "content": [{"text": "Agent running in background"}]}
+        yield {"status": "started", "content": [{"text": "Agent running in background"}]}
     
     elif mode == "sync":
         # Single blocking response (wait for completion)
         result = agent(prompt)
-        return {"status": "success", "content": [{"text": str(result)}]}
+        yield {"status": "success", "content": [{"text": str(result)}]}
     
     else:
         # Streaming response
@@ -116,8 +116,8 @@ MEMORY_ID = os.getenv("BEDROCK_AGENTCORE_MEMORY_ID")
 REGION = os.getenv("AWS_REGION", "us-west-2")
 
 @app.entrypoint
-def invoke(payload, context):
-    """Sync entrypoint"""
+async def invoke(payload, context):
+    """Async entrypoint with yield support"""
     session_id = context.session_id
     actor_id = context.headers.get(
         "X-Amzn-Bedrock-AgentCore-Runtime-Custom-Actor-Id", 
@@ -156,7 +156,7 @@ def invoke(payload, context):
         system_prompt="You have persistent memory across conversations."
     )
     
-    # Stream responses (sync version)
+    # Stream responses
     for event in agent.stream_async(payload.get("prompt")):
         yield event
 
@@ -855,7 +855,7 @@ strands-agentcore-tools/
 
 ## License
 
-Apache2 License - see [LICENSE](LICENSE) file for details.
+MIT License - see [LICENSE](LICENSE) file for details.
 
 ---
 
